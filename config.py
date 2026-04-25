@@ -3,7 +3,7 @@
 DB_CONFIG = {
     "host":     "localhost",
     "user":     "root",
-    "password": "Navjot@001",
+    "password": "nullll",
     "database": "apple_stock_prices",
 }
 
