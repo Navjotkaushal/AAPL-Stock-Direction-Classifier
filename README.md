@@ -1,5 +1,7 @@
 # AAPL Stock Direction Classifier
 
+Link: https://navjotkaushal-aapl-stock-direction-classifier-app-hpejt1.streamlit.app/
+
 End-to-end ML pipeline that ingests daily AAPL stock data from Yahoo Finance into MySQL via a task scheduler, engineers 20+ technical indicators (MACD, RSI, Bollinger Bands, ATR), and trains Random Forest + XGBoost models to classify next-day price direction (Up/Down) using a modular, production-style project structure.
 
 ---
