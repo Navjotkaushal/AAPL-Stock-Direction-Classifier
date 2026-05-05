@@ -1,3 +1,4 @@
+import joblib
 import sys 
 from pathlib import Path 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -51,3 +52,7 @@ def train_all(models: dict, X_train, y_train) ->dict:
         model.fit(X_train, y_train)
         
     return models
+
+def save_models(models, path = "saved_models/"):
+    for name, model in models.items():
+        joblib.dump(model, f"{paath}{name}.pkl")
