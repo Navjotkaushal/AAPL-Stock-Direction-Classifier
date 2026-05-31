@@ -54,8 +54,10 @@ def fetch_from_yfinance(start_date):
     
     df = flatten_columns(df)
     df.reset_index(inplace=True)
+    
+    df.columns = [col.lower() for col in df.columns]
     df["date"] = pd.to_datetime(df["date"])
-    return df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+    return df[["date", "open", "high", "low", "close", "volume"]]
 
 
 # Inserting 
@@ -63,12 +65,12 @@ def fetch_from_yfinance(start_date):
 def insert_data(conn, df):
     rows = list(zip(
         [TICKER] * len(df),
-        df["Date"].tolist(),
-        df["Open"].astype(float).tolist(),
-        df["High"].astype(float).tolist(),
-        df["Low"].astype(float).tolist(),
-        df["Close"].astype(float).tolist(),
-        df["Volume"].astype(float).tolist(),
+        df["date"].tolist(),
+        df["open"].astype(float).tolist(),
+        df["high"].astype(float).tolist(),
+        df["low"].astype(float).tolist(),
+        df["close"].astype(float).tolist(),
+        df["volume"].astype(float).tolist(),
     ))
     
     with conn.cursor() as cur:

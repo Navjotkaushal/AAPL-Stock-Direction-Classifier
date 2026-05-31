@@ -12,7 +12,7 @@ from config import FEATURE_COLS, TEST_SIZE
 # Function designed for feature engineering (20+ indicators)
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    
+    df = df.copy()
     
     # Shorthand aliases to keep lines readable 
 
