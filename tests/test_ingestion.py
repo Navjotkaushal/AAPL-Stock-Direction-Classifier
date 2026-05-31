@@ -227,10 +227,10 @@ class TestLoader:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=fake_cursor)
         mock_conn.cursor.return_value.__exit__  = MagicMock(return_value=False)
         df = pd.DataFrame({
-            "Date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
-            "Open": [185.0, 186.0], "High": [186.0, 187.0],
-            "Low":  [184.0, 185.0], "Close": [185.5, 186.5],
-            "Volume": [50_000_000, 48_000_000],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "open": [185.0, 186.0], "high": [186.0, 187.0],
+            "low":  [184.0, 185.0], "close": [185.5, 186.5],
+            "volume": [50_000_000, 48_000_000],
         })
         insert_data(mock_conn, df)
         fake_cursor.executemany.assert_called_once()
@@ -243,9 +243,9 @@ class TestLoader:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=fake_cursor)
         mock_conn.cursor.return_value.__exit__  = MagicMock(return_value=False)
         df = pd.DataFrame({
-            "Date": pd.to_datetime(["2024-01-02"]),
-            "Open": [185.0], "High": [186.0],
-            "Low":  [184.0], "Close": [185.5], "Volume": [50_000_000],
+            "date": pd.to_datetime(["2024-01-02"]),
+            "open": [185.0], "high": [186.0],
+            "low":  [184.0], "close": [185.5], "volume": [50_000_000],
         })
         insert_data(mock_conn, df)
         mock_conn.commit.assert_called_once()
@@ -259,9 +259,9 @@ class TestLoader:
         mock_conn.cursor.return_value.__exit__  = MagicMock(return_value=False)
         n  = 5
         df = pd.DataFrame({
-            "Date":   pd.date_range("2024-01-02", periods=n),
-            "Open":   [185.0]*n, "High": [186.0]*n,
-            "Low":    [184.0]*n, "Close": [185.5]*n, "Volume": [50_000_000]*n,
+            "date":   pd.date_range("2024-01-02", periods=n),
+            "open":   [185.0]*n, "high": [186.0]*n,
+            "low":    [184.0]*n, "close": [185.5]*n, "volume": [50_000_000]*n,
         })
         insert_data(mock_conn, df)
         rows_passed = fake_cursor.executemany.call_args[0][1]
