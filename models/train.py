@@ -16,23 +16,29 @@ def build_models() -> dict:
         ("clf", RandomForestClassifier(
             
             n_estimators=300,
-            max_depth=6,
+            max_depth=5,
             min_samples_leaf=20,
+            max_features="sqrt",
             class_weight="balanced",
-            random_state=RANDOM_STATE
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
         )),
     ])
     
     xgb = Pipeline(steps=[
         ("scaling", StandardScaler()),
         ("clf", XGBClassifier(
-            n_estimators = 300,
-            max_depth = 4,
-            learning_rate = 0.05,
-            subsample = 0.8,
-            colsample_bytree = 0.8,
+            n_estimators = 100,
+            max_depth = 3,
+            learning_rate = 0.01,
+            subsample = 0.6,
+            colsample_bytree = 0.5,
+            min_child_weight = 10,
+            reg_alpha = 0.5,
+            reg_lambda = 2.0,
             eval_metric = "logloss",
-            random_state = RANDOM_STATE
+            random_state = RANDOM_STATE,
+            n_jobs = -1,
         )),
     ])
     
@@ -46,7 +52,9 @@ def train_all(models: dict, X_train, y_train) -> dict:
         
     return models 
 
-def save_models(models, path = "saved_models/"):
-    os.makedirs(path, exist_ok = True)
+def save_models(models: dict, path: str = "saved_models/"):
+    os.makedirs(path, exist_ok=True)
     for name, model in models.items():
-        joblib.dump(model, f"{path}{name}.pkl")
+        out = os.path.join(path, f"{name}.pkl")
+        joblib.dump(model, out)
+        print(f"  Saved {name} → {out}")

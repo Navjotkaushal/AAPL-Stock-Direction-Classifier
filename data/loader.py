@@ -94,7 +94,7 @@ def update_db():
     
     if not df.empty:
         insert_data(conn, df)
-        print(f"Inserted {len(df)} new row(s) from {df['Date'].min().date()} to {df['Date'].max().date()}")
+        print(f"Inserted {len(df)} new row(s) from {df['date'].min().date()} to {df['date'].max().date()}")
     else:
         print("No new data to insert.")
         

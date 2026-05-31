@@ -3,15 +3,15 @@ warnings.filterwarnings(action="ignore")
 
 from data.loader import load_from_db, get_connection
 from data.validator import data_validation, print_validation_report
-from features.engineer import add_features, prepare_Xy, time_split
+from features.engineer import add_features, prepare_Xy, time_split, FEATURE_COLS
 from features.pipeline import FeaturePipeline
-from models.train import train_all, save_models
+from models.train import build_models, train_all, save_models
 from models.tune import tune_all, build_base_models
-from models.evaluate import evaluate_all, plot_results, predict_tomorrow
+from models.evaluate import evaluate_all, walk_forward_score, plot_results, predict_tomorrow
 from config import TEST_SIZE, RANDOM_STATE
 
 
-def run_pipeline(tune=False):
+def run_pipeline(tune: bool = False, walk_forward: bool = False):
     conn = get_connection()
     try:
         # ── Step 1: Load ──────────────────────────────────────────────────────
@@ -47,50 +47,71 @@ def run_pipeline(tune=False):
         print("========== Layer 3: Feature Engineering ==========")
         obj = FeaturePipeline()
         X_train, X_test, y_train, y_test, df_feat = obj.full_run(df)
-        print(f"Train: {len(X_train)} rows | Test: {len(X_test)} rows\n")
-        # df_feat = add_features(df)
-        # X, y, df_feat = prepare_Xy(df_feat)
-        # X_train, X_test, y_train, y_test = time_split(X, y, test_size=TEST_SIZE)
-        # print(f"Train: {len(X_train)} rows | Test: {len(X_test)} rows\n")
 
-        # ── Baseline (always-UP accuracy) — used for comparison ───────────────
+        print(f"\nTrain: {X_train.index[0].date()} to {X_train.index[-1].date()}, rows: {len(X_train)}")
+        print(f"Test:  {X_test.index[0].date()}  to {X_test.index[-1].date()},  rows: {len(X_test)}")
+        print(f"Target mean — Train: {y_train.mean():.3f} | Test: {y_test.mean():.3f}")
+        print(f"TEST_SIZE = {TEST_SIZE}\n")
+
+        # ── Baseline: always-UP accuracy ──────────────────────────────────────
         baseline_acc = float(y_test.mean())
         print(f"Baseline (always predict UP): {baseline_acc:.4f}\n")
 
-        # ── Step 4: Train or Tune ─────────────────────────────────────────────
+        # ── Step 4: Walk-Forward Validation (optional) ────────────────────────
+        # Runs BEFORE train/test split on full data.
+        # Gives a regime-robust view of model quality across 5 time windows.
+        # Use --walk-forward flag to enable (slow — fits models 5x).
+        if walk_forward:
+            print("========== Layer 4a: Walk-Forward Validation ==========")
+            import pandas as pd
+            X_full = pd.concat([X_train, X_test])
+            y_full = pd.concat([y_train, y_test])
+
+            if tune:
+                wf_models = tune_all(X_train, y_train)
+            else:
+                wf_base   = build_base_models()
+                wf_models = {name: model for name, (model, _) in wf_base.items()}
+
+            walk_forward_score(wf_models, X_full, y_full, n_splits=5)
+            print()
+
+        # ── Step 5: Train or Tune ─────────────────────────────────────────────
         if tune:
-            print("========== Layer 4: Tuning Models ==========")
+            print("========== Layer 5: Tuning Models ==========")
             print("WARNING: This will take several minutes.\n")
             trained_models = tune_all(X_train, y_train)
         else:
-            print("========== Layer 4: Training Models ==========")
-            base_models = build_base_models()
-            models = {name: model for name, (model, _) in base_models.items()}
+            print("========== Layer 5: Training Models ==========")
+            # build_models() uses the tightened hyperparameters in train.py
+            models         = build_models()
             trained_models = train_all(models, X_train, y_train)
 
-        # ── Step 5: Evaluate ──────────────────────────────────────────────────
-        print("========== Layer 5: Evaluating Models ==========")
+        # ── Step 6: Evaluate ──────────────────────────────────────────────────
+        # evaluate_all() now prints:
+        #   - accuracy + ROC-AUC (standard)
+        #   - threshold analysis at 0.55 / 0.58 / 0.60 / 0.63 / 0.65
+        print("========== Layer 6: Evaluating Models ==========")
         eval_results = evaluate_all(trained_models, X_test, y_test)
 
-        # ── Step 6: Plot ──────────────────────────────────────────────────────
-        print("========== Layer 6: Plotting Results ==========")
+        # ── Step 7: Plot ──────────────────────────────────────────────────────
+        print("========== Layer 7: Plotting Results ==========")
         plot_results(eval_results, trained_models)
 
-        # ── Step 7: Predict Tomorrow ──────────────────────────────────────────
-        print("========== Layer 7: Tomorrow's Prediction ==========")
+        # ── Step 8: Predict Tomorrow ──────────────────────────────────────────
+        # Also flags low-confidence predictions explicitly
+        print("========== Layer 8: Tomorrow's Prediction ==========")
         predict_tomorrow(trained_models, df_feat)
 
-        # ── Step 8: Save ──────────────────────────────────────────────────────
+        # ── Step 9: Save ──────────────────────────────────────────────────────
         save_models(trained_models)
         print("\nPipeline completed successfully.")
 
     except ValueError as e:
-        # Validation / data errors — no DB rollback needed
         print(f"Pipeline stopped: {e}")
 
     except Exception as e:
         print(f"Pipeline crashed: {e}")
-        # Only roll back if we're in the middle of a DB write
         try:
             conn.rollback()
         except Exception:
@@ -105,6 +126,16 @@ def run_pipeline(tune=False):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tune", action="store_true", help="Run hyperparameter tuning")
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="Run Optuna hyperparameter tuning instead of default params",
+    )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        dest="walk_forward",
+        help="Run 5-fold walk-forward validation before final train/test eval",
+    )
     args = parser.parse_args()
-    run_pipeline(tune=args.tune)
+    run_pipeline(tune=args.tune, walk_forward=args.walk_forward)
