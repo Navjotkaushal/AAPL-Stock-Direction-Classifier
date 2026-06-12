@@ -1,101 +1,48 @@
-# Importing required libraires
-import os 
-import sys 
-import sqlalchemy
+"""
+data/loader.py
+--------------
+Fetches AAPL OHLCV data from Yahoo Finance via yfinance.
+The get_connection() / conn parameter is kept as a no-op so that
+nothing else in the codebase needs to change.
+"""
+
 import yfinance as yf
-import pandas as pd 
-import pymysql 
-from datetime import timedelta 
+import pandas as pd
 
-from config import DB_CONFIG, TICKER, UPSERT_SQL
-
-
-# DB Helpers 
 
 def get_connection():
-    return pymysql.connect(**DB_CONFIG)
+    """No-op — kept for API compatibility with the rest of the pipeline."""
+    return None
 
 
-def get_last_date(conn):
-    with conn.cursor() as cur:
-        cur.execute("SELECT MAX(date) FROM stock_data WHERE ticker = %s", (TICKER,))
-        return cur.fetchone()[0] # datetime or None 
-    
+def load_from_db(conn=None, ticker: str = "AAPL", start: str = "2018-01-01") -> pd.DataFrame:
+    """
+    Download daily OHLCV data for `ticker` from Yahoo Finance.
 
-def load_from_db(conn) -> pd.DataFrame:
-    # Load full history from database
-    df = pd.read_sql(
-        """
-        SELECT Date, open, high, low, close, volume
-        FROM stock_data WHERE ticker = %s ORDER BY date ASC
-        """,
-        conn, params=(TICKER,)
+    Returns a DataFrame with columns: open, high, low, close, volume
+    and a DatetimeIndex named 'date'.
+    """
+    df = yf.download(
+        ticker,
+        start=start,
+        auto_adjust=True,   # adjusts for splits/dividends automatically
+        progress=False,
     )
-    df["date"] = pd.to_datetime(df["Date"])
-    df.set_index("date", inplace=True)
-    return df 
 
-
-# fetching
-
-def flatten_columns(df): 
-    
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
-    return df 
-
-
-def fetch_from_yfinance(start_date):
-    df = yf.download(TICKER, start = start_date, 
-                     progress=False, 
-                     auto_adjust=True)
     if df.empty:
-        return pd.DataFrame()
-    
-    df = flatten_columns(df)
-    df.reset_index(inplace=True)
-    
-    df.columns = [col.lower() for col in df.columns]
-    df["date"] = pd.to_datetime(df["date"])
-    return df[["date", "open", "high", "low", "close", "volume"]]
+        raise ValueError(f"yfinance returned no data for {ticker}. Check ticker or internet connection.")
 
-
-# Inserting 
-
-def insert_data(conn, df):
-    rows = list(zip(
-        [TICKER] * len(df),
-        df["date"].tolist(),
-        df["open"].astype(float).tolist(),
-        df["high"].astype(float).tolist(),
-        df["low"].astype(float).tolist(),
-        df["close"].astype(float).tolist(),
-        df["volume"].astype(float).tolist(),
-    ))
-    
-    with conn.cursor() as cur:
-        cur.executemany(UPSERT_SQL, rows)
-    conn.commit()
-    
-
-# Main
-
-def update_db():
-    conn = get_connection()
-    last_date = get_last_date(conn)
-    
-    if last_date:
-        start = (last_date + timedelta(days = 1)).strftime("%Y-%m-%d")
-        
+    # Flatten MultiIndex columns if present (yfinance >= 0.2.x sometimes returns them)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [col[0].lower() for col in df.columns]
     else:
-        start = "2010-01-01"
-        
-    df = fetch_from_yfinance(start)
-    
-    if not df.empty:
-        insert_data(conn, df)
-        print(f"Inserted {len(df)} new row(s) from {df['date'].min().date()} to {df['date'].max().date()}")
-    else:
-        print("No new data to insert.")
-        
-    conn.close()
+        df.columns = [c.lower() for c in df.columns]
+
+    df.index.name = "date"
+    df.index = pd.to_datetime(df.index)
+
+    # Keep only the columns the rest of the pipeline expects
+    expected = ["open", "high", "low", "close", "volume"]
+    df = df[[c for c in expected if c in df.columns]]
+
+    return df
