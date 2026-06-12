@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AAPL Direction Classifier</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
+    h1 { font-size: 1.8rem; margin-bottom: 0.3rem; }
+    .subtitle { color: #8b949e; margin-bottom: 2rem; font-size: 0.9rem; }
+    .card-row { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: center; margin-bottom: 2rem; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1.5rem 2rem; min-width: 220px; text-align: center; }
+    .card h2 { font-size: 0.85rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
+    .direction { font-size: 2.5rem; font-weight: 700; }
+    .up { color: #3fb950; }
+    .down { color: #f85149; }
+    .confidence { font-size: 1rem; color: #8b949e; margin-top: 0.3rem; }
+    .date-tag { color: #8b949e; font-size: 0.8rem; margin-top: 1rem; }
+    button { background: #238636; color: white; border: none; border-radius: 8px; padding: 0.7rem 1.8rem; font-size: 1rem; cursor: pointer; margin-bottom: 2rem; }
+    button:hover { background: #2ea043; }
+    #error { color: #f85149; font-size: 0.85rem; }
+    .loading { color: #8b949e; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>📈 AAPL Direction Classifier</h1>
+  <p class="subtitle">Predicts next-day AAPL price direction using Random Forest &amp; XGBoost</p>
+
+  <button onclick="fetchPrediction()">Get Prediction</button>
+  <p id="error"></p>
+
+  <div class="card-row" id="cards"></div>
+  <p class="date-tag" id="date"></p>
+
+  <script>
+    async function fetchPrediction() {
+      const cardsEl = document.getElementById("cards");
+      const dateEl = document.getElementById("date");
+      const errorEl = document.getElementById("error");
+
+      cardsEl.innerHTML = '<p class="loading">Loading...</p>';
+      errorEl.textContent = "";
+
+      try {
+        const res = await fetch("http://localhost:8000/predict");
+        if (!res.ok) throw new Error("API error: " + res.status);
+        const data = await res.json();
+
+        cardsEl.innerHTML = "";
+        for (const [model, result] of Object.entries(data.predictions)) {
+          const isUp = result.direction === "UP";
+          cardsEl.innerHTML += `
+            <div class="card">
+              <h2>${model}</h2>
+              <div class="direction ${isUp ? "up" : "down"}">
+                ${isUp ? "⬆ UP" : "⬇ DOWN"}
+              </div>
+              <div class="confidence">Confidence: ${result.confidence}%</div>
+            </div>
+          `;
+        }
+        dateEl.textContent = `Based on data up to ${data.as_of_date}. Not financial advice.`;
+      } catch (e) {
+        cardsEl.innerHTML = "";
+        errorEl.textContent = "Failed to load: " + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

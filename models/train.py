@@ -54,7 +54,5 @@ def train_all(models: dict, X_train, y_train) -> dict:
 
 def save_models(models: dict, path: str = "saved_models/"):
     os.makedirs(path, exist_ok=True)
-    for name, model in models.items():
-        out = os.path.join(path, f"{name}.pkl")
-        joblib.dump(model, out)
-        print(f"  Saved {name} → {out}")
+    joblib.dump(models, "saved_models/trained_models.pkl")
+    print("Saved")

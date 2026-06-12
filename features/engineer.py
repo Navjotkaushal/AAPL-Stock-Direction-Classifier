@@ -1,3 +1,4 @@
+import joblib 
 import sys 
 from pathlib import Path
 
@@ -214,6 +215,9 @@ def prepare_Xy(df : pd.DataFrame):
     df = df.dropna(subset=FEATURE_COLS + ["target"])
     X = df[FEATURE_COLS]
     y = df["target"]
+    
+    joblib.dump(list(X.columns), "saved_models/feature_columns.pkl")
+    joblib.dump(df, "saved_models/last_features.pkl")
     
     return X, y, df
 
