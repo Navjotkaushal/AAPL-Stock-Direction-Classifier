@@ -2,51 +2,226 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AAPL Direction Classifier</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
     h1 { font-size: 1.8rem; margin-bottom: 0.3rem; }
     .subtitle { color: #8b949e; margin-bottom: 2rem; font-size: 0.9rem; }
+
+    .btn-row { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-bottom: 1.5rem; }
+    button {
+      border: none; border-radius: 8px;
+      padding: 0.7rem 1.8rem; font-size: 0.95rem;
+      cursor: pointer; transition: background 0.15s;
+    }
+    #btn-pipeline { background: #1f6feb; color: #fff; }
+    #btn-pipeline:hover { background: #388bfd; }
+    #btn-pipeline:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+    #btn-predict { background: #238636; color: #fff; }
+    #btn-predict:hover { background: #2ea043; }
+    #btn-predict:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+
+    /* Pipeline status box */
+    #pipeline-box {
+      width: 100%; max-width: 640px;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 10px; padding: 1.2rem 1.5rem;
+      margin-bottom: 1.5rem; display: none;
+    }
+    #pipeline-box h3 { font-size: 0.8rem; text-transform: uppercase; color: #8b949e; letter-spacing: 0.06em; margin-bottom: 0.8rem; }
+    #pipeline-step { font-size: 0.9rem; color: #79c0ff; margin-bottom: 0.6rem; }
+    .step-done { font-size: 0.85rem; color: #3fb950; padding: 0.2rem 0; }
+    .step-done::before { content: "✓  "; }
+
+    /* Prediction cards */
     .card-row { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: center; margin-bottom: 2rem; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1.5rem 2rem; min-width: 220px; text-align: center; }
+    .card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 12px; padding: 1.5rem 2rem;
+      min-width: 220px; text-align: center;
+    }
     .card h2 { font-size: 0.85rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
     .direction { font-size: 2.5rem; font-weight: 700; }
     .up { color: #3fb950; }
     .down { color: #f85149; }
     .confidence { font-size: 1rem; color: #8b949e; margin-top: 0.3rem; }
-    .date-tag { color: #8b949e; font-size: 0.8rem; margin-top: 1rem; }
-    button { background: #238636; color: white; border: none; border-radius: 8px; padding: 0.7rem 1.8rem; font-size: 1rem; cursor: pointer; margin-bottom: 2rem; }
-    button:hover { background: #2ea043; }
-    #error { color: #f85149; font-size: 0.85rem; }
+
+    .date-tag { color: #8b949e; font-size: 0.8rem; margin-top: 0.5rem; }
+    #error { color: #f85149; font-size: 0.85rem; margin-bottom: 1rem; min-height: 1.2rem; }
     .loading { color: #8b949e; font-style: italic; }
+
+    #status-badge {
+      font-size: 0.78rem; padding: 0.25rem 0.7rem;
+      border-radius: 20px; margin-bottom: 1.5rem;
+      border: 1px solid #30363d; color: #8b949e;
+    }
+    #status-badge.ready   { border-color: #3fb950; color: #3fb950; }
+    #status-badge.running { border-color: #d29922; color: #d29922; }
+    #status-badge.error   { border-color: #f85149; color: #f85149; }
   </style>
 </head>
 <body>
   <h1>📈 AAPL Direction Classifier</h1>
   <p class="subtitle">Predicts next-day AAPL price direction using Random Forest &amp; XGBoost</p>
 
-  <button onclick="fetchPrediction()">Get Prediction</button>
+  <div id="status-badge">checking status…</div>
+
+  <div class="btn-row">
+    <button id="btn-pipeline" onclick="startPipeline()">Train Pipeline</button>
+    <button id="btn-predict"  onclick="fetchPrediction()" disabled>Get Prediction</button>
+  </div>
+
   <p id="error"></p>
+
+  <div id="pipeline-box">
+    <h3>Pipeline progress</h3>
+    <p id="pipeline-step"></p>
+    <div id="pipeline-steps-done"></div>
+  </div>
 
   <div class="card-row" id="cards"></div>
   <p class="date-tag" id="date"></p>
 
   <script>
-    async function fetchPrediction() {
-      const cardsEl = document.getElementById("cards");
-      const dateEl = document.getElementById("date");
-      const errorEl = document.getElementById("error");
+    // ── All API calls use relative URLs ──────────────────────────────────────
+    // This works whether you open the page locally (same origin as the API)
+    // or when deployed — no hardcoded localhost needed.
 
-      cardsEl.innerHTML = '<p class="loading">Loading...</p>';
-      errorEl.textContent = "";
+    let pollTimer = null;
+
+    // Check model status on load
+    window.addEventListener("DOMContentLoaded", checkHealth);
+
+    async function checkHealth() {
+      try {
+        const res  = await fetch("/health");
+        const data = await res.json();
+        updateBadge(data.model_ready ? "ready" : data.pipeline, data.model_ready);
+      } catch {
+        updateBadge("error", false);
+        showError("Cannot reach the API. Make sure the server is running.");
+      }
+    }
+
+    function updateBadge(pipelineStatus, modelReady) {
+      const badge  = document.getElementById("status-badge");
+      const btnPred = document.getElementById("btn-predict");
+
+      if (modelReady) {
+        badge.textContent = "Model ready";
+        badge.className   = "ready";
+        btnPred.disabled  = false;
+      } else if (pipelineStatus === "running") {
+        badge.textContent = "Pipeline running…";
+        badge.className   = "running";
+        btnPred.disabled  = true;
+      } else if (pipelineStatus === "error") {
+        badge.textContent = "Pipeline error";
+        badge.className   = "error";
+        btnPred.disabled  = true;
+      } else {
+        badge.textContent = "No model trained — run the pipeline first";
+        badge.className   = "";
+        btnPred.disabled  = true;
+      }
+    }
+
+    async function startPipeline() {
+      showError("");
+      document.getElementById("cards").innerHTML = "";
+      document.getElementById("date").textContent = "";
+
+      const btnPipeline = document.getElementById("btn-pipeline");
+      btnPipeline.disabled = true;
+      btnPipeline.textContent = "Running…";
+
+      const box = document.getElementById("pipeline-box");
+      box.style.display = "block";
+      document.getElementById("pipeline-step").textContent = "Starting…";
+      document.getElementById("pipeline-steps-done").innerHTML = "";
 
       try {
-        const res = await fetch("http://localhost:8000/predict");
-        if (!res.ok) throw new Error("API error: " + res.status);
-        const data = await res.json();
+        const res = await fetch("/run-pipeline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ test_size: 0.2 }) });
+        if (res.status === 409) {
+          showError("Pipeline is already running.");
+          resetPipelineBtn();
+          return;
+        }
+        if (!res.ok) throw new Error("Server error " + res.status);
+        pollStatus();
+      } catch (e) {
+        showError("Failed to start pipeline: " + e.message);
+        resetPipelineBtn();
+      }
+    }
 
+    function pollStatus() {
+      clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        try {
+          const res  = await fetch("/pipeline-status");
+          const data = await res.json();
+
+          document.getElementById("pipeline-step").textContent = data.step || "";
+          const doneEl = document.getElementById("pipeline-steps-done");
+          doneEl.innerHTML = (data.steps_done || []).map(s => `<p class="step-done">${s.label}</p>`).join("");
+
+          updateBadge(data.status, data.status === "done");
+
+          if (data.status === "done") {
+            clearInterval(pollTimer);
+            resetPipelineBtn();
+            document.getElementById("pipeline-step").textContent = "Complete ✓";
+          } else if (data.status === "error") {
+            clearInterval(pollTimer);
+            resetPipelineBtn();
+            showError("Pipeline error: " + (data.error || "unknown"));
+          }
+        } catch {
+          clearInterval(pollTimer);
+          showError("Lost connection while polling pipeline status.");
+          resetPipelineBtn();
+        }
+      }, 1500);
+    }
+
+    function resetPipelineBtn() {
+      const btn = document.getElementById("btn-pipeline");
+      btn.disabled = false;
+      btn.textContent = "Train Pipeline";
+    }
+
+    async function fetchPrediction() {
+      const cardsEl = document.getElementById("cards");
+      const dateEl  = document.getElementById("date");
+      showError("");
+
+      cardsEl.innerHTML = '<p class="loading">Loading…</p>';
+
+      try {
+        const res  = await fetch("/predict");
+
+        if (res.status === 404) {
+          cardsEl.innerHTML = "";
+          showError("No trained model found. Click \"Train Pipeline\" first.");
+          return;
+        }
+        if (!res.ok) throw new Error("Server error " + res.status);
+
+        const data = await res.json();
         cardsEl.innerHTML = "";
+
         for (const [model, result] of Object.entries(data.predictions)) {
           const isUp = result.direction === "UP";
           cardsEl.innerHTML += `
@@ -56,14 +231,18 @@
                 ${isUp ? "⬆ UP" : "⬇ DOWN"}
               </div>
               <div class="confidence">Confidence: ${result.confidence}%</div>
-            </div>
-          `;
+            </div>`;
         }
+
         dateEl.textContent = `Based on data up to ${data.as_of_date}. Not financial advice.`;
       } catch (e) {
         cardsEl.innerHTML = "";
-        errorEl.textContent = "Failed to load: " + e.message;
+        showError("Failed to load prediction: " + e.message);
       }
+    }
+
+    function showError(msg) {
+      document.getElementById("error").textContent = msg;
     }
   </script>
 </body>

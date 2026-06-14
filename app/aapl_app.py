@@ -1,465 +1,589 @@
-import warnings
-warnings.filterwarnings("ignore")
+"""
+AAPL Stock Direction Classifier — Demo App
+Self-contained: fetches live data from yfinance, no MySQL required.
+Drop this file into your repo root and run: streamlit run app_demo.py
+"""
+
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent))
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
-from datetime import datetime
-from pathlib import Path
+import yfinance as yf
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    accuracy_score, roc_auc_score, confusion_matrix,
+    classification_report, roc_curve
+)
+from xgboost import XGBClassifier
+import warnings
+warnings.filterwarnings("ignore")
 
-from data.loader import load_from_db, get_connection
-from data.validator import data_validation
-from features.engineer import add_features, prepare_Xy, time_split
-from models.train import train_all, save_models
-from models.tune import tune_all, build_base_models
-from models.evaluate import evaluate_all, predict_tomorrow
-from config import TEST_SIZE, RANDOM_STATE, TICKER, FEATURE_COLS
-
-# ── Page Config ───────────────────────────────────────────────────────────────
+# ─── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title=f"{TICKER} · ML Pipeline",
+    page_title="AAPL Direction Classifier",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ── Global Style ──────────────────────────────────────────────────────────────
+# ─── Styling ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+  /* terminal-style header for prediction card */
+  .pred-card {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1.2rem 1.5rem;
+      font-family: 'Courier New', monospace;
+  }
+  .pred-up   { color: #3fb950; font-size: 2rem; font-weight: 700; }
+  .pred-down { color: #f85149; font-size: 2rem; font-weight: 700; }
+  .pred-label { color: #8b949e; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .pred-conf  { color: #d2a679; font-size: 1rem; }
 
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-h1, h2, h3 { font-family: 'Space Mono', monospace !important; letter-spacing: -0.5px; }
+  [data-testid="stMetricValue"] { font-size: 1.8rem; font-weight: 700; }
+  .block-container { padding-top: 1.8rem; }
+  .stTabs [data-baseweb="tab"] { font-size: 0.9rem; font-weight: 500; }
 
-section[data-testid="stSidebar"] { background: #0a0a12; border-right: 1px solid #1e1e30; }
-
-.stat-card { background: #0f0f1a; border: 1px solid #1e1e30; border-radius: 12px; padding: 20px 24px; margin-bottom: 8px; }
-.stat-card .label { font-size: 11px; color: #555577; text-transform: uppercase; letter-spacing: 1.5px; font-family: 'Space Mono', monospace; }
-.stat-card .value { font-size: 28px; font-weight: 600; color: #e0e0ff; margin-top: 4px; }
-
-.check-row { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 8px; margin-bottom: 6px; font-family: 'Space Mono', monospace; font-size: 13px; }
-.check-pass { background: #0d1f14; border: 1px solid #1a3d26; color: #55A868; }
-.check-fail { background: #1f0d0d; border: 1px solid #3d1a1a; color: #C44E52; }
-.check-warn { background: #1f1a0d; border: 1px solid #3d3020; color: #CCB974; }
-
-.pred-card { border-radius: 14px; padding: 28px; text-align: center; border: 1px solid #1e1e30; }
-.pred-up   { background: linear-gradient(135deg, #0d1f14 0%, #0a1510 100%); border-color: #1a3d26; }
-.pred-down { background: linear-gradient(135deg, #1f0d0d 0%, #150a0a 100%); border-color: #3d1a1a; }
-.pred-direction { font-size: 42px; font-family: 'Space Mono', monospace; font-weight: 700; }
-.pred-up   .pred-direction { color: #55A868; }
-.pred-down .pred-direction { color: #C44E52; }
-.pred-conf { font-size: 14px; color: #888; margin-top: 8px; font-family: 'Space Mono', monospace; }
-.pred-name { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #555577; margin-bottom: 12px; }
-
-button[data-baseweb="tab"] { font-family: 'Space Mono', monospace !important; font-size: 12px !important; }
-div[data-testid="stMetricValue"] { font-family: 'Space Mono', monospace; }
-
-div.stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #4C72B0 0%, #2a4a8a 100%);
-    border: none; border-radius: 10px;
-    font-family: 'Space Mono', monospace; font-size: 13px;
-    letter-spacing: 0.5px; padding: 12px; transition: all 0.2s;
-}
-div.stButton > button[kind="primary"]:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(76, 114, 176, 0.4);
-}
-.pipeline-header { font-family: 'Space Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #555577; }
+  /* sidebar note */
+  .sidebar-note {
+      background: #161b22;
+      border-left: 3px solid #388bfd;
+      padding: 0.6rem 0.8rem;
+      border-radius: 4px;
+      font-size: 0.82rem;
+      color: #8b949e;
+  }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session State ─────────────────────────────────────────────────────────────
-defaults = {
-    "df": None, "df_feat": None,
-    "X_train": None, "X_test": None,
-    "y_train": None, "y_test": None,
-    "trained_models": None, "eval_results": None,
-    "validation_results": None, "pipeline_done": False,
-    "last_run": None, "baseline_acc": None,
-}
-for k, v in defaults.items():
-    st.session_state.setdefault(k, v)
+# ─── Feature engineering (mirrors features/engineer.py) ──────────────────────
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    c = d["Close"]
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+    # Returns
+    for n in [1, 3, 5, 10]:
+        d[f"ret_{n}d"] = c.pct_change(n)
+
+    # SMA ratios
+    for n in [5, 10, 20, 50]:
+        d[f"sma_{n}_ratio"] = c / c.rolling(n).mean() - 1
+
+    # MACD
+    ema12 = c.ewm(span=12).mean()
+    ema26 = c.ewm(span=26).mean()
+    d["macd"]        = ema12 - ema26
+    d["macd_signal"] = d["macd"].ewm(span=9).mean()
+    d["macd_hist"]   = d["macd"] - d["macd_signal"]
+
+    # RSI-14
+    delta  = c.diff()
+    gain   = delta.clip(lower=0).rolling(14).mean()
+    loss   = (-delta.clip(upper=0)).rolling(14).mean()
+    rs     = gain / (loss + 1e-9)
+    d["rsi14"] = 100 - 100 / (1 + rs)
+
+    # Bollinger Bands
+    ma20   = c.rolling(20).mean()
+    std20  = c.rolling(20).std()
+    upper  = ma20 + 2 * std20
+    lower  = ma20 - 2 * std20
+    d["bb_width"] = (upper - lower) / (ma20 + 1e-9)
+    d["bb_pct"]   = (c - lower) / (upper - lower + 1e-9)
+
+    # ATR
+    h, l, p = df["High"], df["Low"], df["Close"].shift(1)
+    tr = pd.concat([h - l, (h - p).abs(), (l - p).abs()], axis=1).max(axis=1)
+    d["atr_ratio"] = tr.rolling(14).mean() / (c + 1e-9)
+
+    # Volume
+    vol = df["Volume"]
+    d["vol_spike"]  = vol / (vol.rolling(20).mean() + 1e-9)
+    d["vol_chg"]    = vol.pct_change()
+
+    # Candle structure
+    d["body"]        = (df["Close"] - df["Open"]).abs() / (df["Open"] + 1e-9)
+    d["upper_shadow"] = (df["High"] - df[["Close", "Open"]].max(axis=1)) / (df["Open"] + 1e-9)
+    d["lower_shadow"] = (df[["Close", "Open"]].min(axis=1) - df["Low"]) / (df["Open"] + 1e-9)
+
+    # Target: 1 if tomorrow closes higher
+    d["target"] = (c.shift(-1) > c).astype(int)
+
+    return d
+
+
+def get_feature_cols(df: pd.DataFrame) -> list:
+    drop = {"Open", "High", "Low", "Close", "Adj Close", "Volume", "target"}
+    return [c for c in df.columns if c not in drop]
+
+
+def time_split(X, y, test_size=0.20):
+    n        = len(X)
+    split    = int(n * (1 - test_size))
+    return X.iloc[:split], X.iloc[split:], y.iloc[:split], y.iloc[split:]
+
+
+def build_models():
+    return {
+        "Random Forest": Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", RandomForestClassifier(
+                n_estimators=300, max_depth=6,
+                min_samples_leaf=20, max_features="sqrt",
+                random_state=42, n_jobs=-1
+            ))
+        ]),
+        "XGBoost": Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", XGBClassifier(
+                n_estimators=300, max_depth=4,
+                learning_rate=0.05, subsample=0.8,
+                colsample_bytree=0.8, reg_alpha=0.1,
+                reg_lambda=1.0, use_label_encoder=False,
+                eval_metric="logloss", random_state=42,
+                verbosity=0
+            ))
+        ]),
+    }
+
+# ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"""
-    <div style='padding: 8px 0 20px'>
-        <div style='font-family: Space Mono, monospace; font-size: 10px;
-                    text-transform: uppercase; letter-spacing: 2px; color: #555577;'>Ticker</div>
-        <div style='font-family: Space Mono, monospace; font-size: 32px;
-                    font-weight: 700; color: #e0e0ff; margin-top: 4px;'>{TICKER}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("⚙️ Settings")
+    st.divider()
+
+    ticker = st.selectbox(
+        "Ticker",
+        ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"],
+        index=0,
+        help="AAPL is the primary focus of this project."
+    )
+
+    start_date = st.date_input("Data start", value=pd.Timestamp("2015-01-01"))
+
+    test_size = st.slider(
+        "Test set fraction",
+        min_value=0.10, max_value=0.35,
+        value=0.20, step=0.05,
+        help="Data is split chronologically — no leakage."
+    )
+
+    conf_threshold = st.slider(
+        "Confidence threshold",
+        min_value=0.45, max_value=0.70,
+        value=0.55, step=0.01,
+        help="Only predict when model is at least this confident."
+    )
 
     st.divider()
-    tune = st.toggle("Hyperparameter Tuning", value=False)
-    if tune:
-        st.caption("⚠️ ~5–15 min. 500+ model fits.")
-        # FIX: n_iter was declared but never actually passed to tune_all in the original
-        n_iter = st.slider("Tuning Iterations", 10, 80, 40)
-    else:
-        n_iter = 40  # default, unused when tune=False
-
+    st.markdown('<div class="sidebar-note">No MySQL needed — data fetched live from Yahoo Finance.</div>', unsafe_allow_html=True)
     st.divider()
-    run_btn = st.button("▶ Run Pipeline", type="primary", use_container_width=True)
 
-    if st.session_state.pipeline_done:
-        if st.button("💾 Save Models", use_container_width=True):
-            save_models(st.session_state.trained_models)
-            st.success("Saved.")
+    run_btn = st.button("🚀 Run Pipeline", use_container_width=True, type="primary")
 
-    st.divider()
-    if st.session_state.last_run:
-        st.caption(f"Last run: {st.session_state.last_run}")
-    else:
-        st.caption("Not yet run.")
+# ─── Header ───────────────────────────────────────────────────────────────────
+st.title("📈 AAPL Stock Direction Classifier")
+st.caption(
+    "End-to-end ML pipeline · Random Forest + XGBoost · "
+    "20+ technical indicators · Next-day Up/Down prediction"
+)
+st.divider()
 
-    st.markdown("""
-    <div style='position: fixed; bottom: 24px; font-size: 10px; color: #333355; font-family: Space Mono, monospace;'>
-        sklearn · xgboost · yfinance · streamlit
-    </div>
-    """, unsafe_allow_html=True)
-
-# ── Header ────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div style='margin-bottom: 4px'>
-    <span class='pipeline-header'>Price Direction Classification</span>
-</div>
-<h1 style='margin: 0; font-size: 36px;'>{TICKER} ML Pipeline</h1>
-""", unsafe_allow_html=True)
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_data, tab_val, tab_feat, tab_models, tab_pred = st.tabs([
-    " 📊 Data ", " ✅ Validation ", " 🔧 Features ", " 🤖 Models ", " 🔮 Prediction "
-])
-
-# ── Pipeline Runner ───────────────────────────────────────────────────────────
+# ─── Main pipeline ────────────────────────────────────────────────────────────
 if run_btn:
-    conn = get_connection()
-    try:
-        with st.status("Running pipeline...", expanded=True) as status:
 
-            # Step 1 — Load
-            st.write("📥 Loading data from database...")
-            df = load_from_db(conn)
-            if df.empty:
-                status.update(label="❌ No data in DB", state="error")
-                st.stop()
-            st.session_state.df = df
-            st.write(f"✅ {df.shape[0]:,} rows loaded | {df.index.min().date()} → {df.index.max().date()}")
+    # 1 ── Fetch data
+    with st.status(f"Fetching {ticker} data from Yahoo Finance …", expanded=True) as status:
+        raw = yf.download(ticker, start=str(start_date), auto_adjust=True, progress=False)
+        if raw.empty:
+            st.error("No data returned. Check ticker or date range.")
+            st.stop()
+        # Flatten MultiIndex if present
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        raw = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        status.update(
+            label=f"✅ {len(raw):,} rows · {raw.index[0].date()} → {raw.index[-1].date()}",
+            state="complete"
+        )
 
-            # Step 2 — Validate
-            st.write("🔍 Validating OHLCV data...")
-            val = data_validation(df)
-            st.session_state.validation_results = val
+    # 2 ── Feature engineering
+    with st.status("Engineering features …", expanded=False) as status:
+        feat_df   = engineer_features(raw)
+        feat_cols = get_feature_cols(feat_df)
+        clean_df  = feat_df[feat_cols + ["target", "Close"]].dropna()
+        X         = clean_df[feat_cols]
+        y         = clean_df["target"]
+        X_train, X_test, y_train, y_test = time_split(X, y, test_size)
+        status.update(
+            label=f"✅ {len(feat_cols)} features | Train: {len(X_train):,} · Test: {len(X_test):,}",
+            state="complete"
+        )
 
-            errors = []
-            if not val["ohlc_clean"]:
-                errors.append(f"OHLC violations: {val['ohlc_violations']}")
-            if val["has_nulls"]:
-                errors.append(f"Null values: {val['missing_values']}")
-            if val["duplicate_dates"] > 0:
-                errors.append(f"{val['duplicate_dates']} duplicate dates")
-            if errors:
-                status.update(label="❌ Validation failed", state="error")
-                for e in errors:
-                    st.error(e)
-                conn.close()
-                st.stop()
-            st.write("✅ Validation passed — data is clean")
+    # 3 ── Train
+    with st.status("Training Random Forest + XGBoost …", expanded=False) as status:
+        models = build_models()
+        for name, pipe in models.items():
+            pipe.fit(X_train, y_train)
+        status.update(label="✅ Models trained", state="complete")
 
-            # Step 3 — Features
-            st.write("🔧 Engineering features...")
-            df_feat        = add_features(df)
-            X, y, df_feat  = prepare_Xy(df_feat)
-            X_train, X_test, y_train, y_test = time_split(X, y, test_size=TEST_SIZE)
-            st.session_state.df_feat  = df_feat
-            st.session_state.X_train  = X_train
-            st.session_state.X_test   = X_test
-            st.session_state.y_train  = y_train
-            st.session_state.y_test   = y_test
+    # 4 ── Evaluate
+    results = {}
+    for name, pipe in models.items():
+        preds = pipe.predict(X_test)
+        proba = pipe.predict_proba(X_test)[:, 1]
+        cm    = confusion_matrix(y_test, preds)
+        results[name] = {
+            "pipe":  pipe,
+            "preds": preds,
+            "proba": proba,
+            "cm":    cm,
+            "acc":   accuracy_score(y_test, preds),
+            "auc":   roc_auc_score(y_test, proba),
+        }
 
-            # Baseline accuracy (always predict UP)
-            baseline_acc = float(y_test.mean())
-            st.session_state.baseline_acc = baseline_acc
-            st.write(f"✅ {X_train.shape[1]} features | Train: {len(X_train)} Test: {len(X_test)} | Baseline: {baseline_acc:.2%}")
+    # ── Tomorrow's prediction ──────────────────────────────────────────────────
+    last_row = X.iloc[[-1]]
+    last_date = X.index[-1].date()
 
-            # Step 4 — Train / Tune
-            if tune:
-                st.write(f"⚙️ Tuning ({n_iter} iterations × 5 folds)...")
-                # FIX: pass n_iter — original forgot this argument
-                trained_models = tune_all(X_train, y_train, n_iter=n_iter)
-            else:
-                st.write("🤖 Training models with default params...")
-                base       = build_base_models()
-                models_only = {name: model for name, (model, _) in base.items()}
-                trained_models = train_all(models_only, X_train, y_train)
+    st.subheader("🔮 Tomorrow's Prediction")
+    pred_cols = st.columns(len(models))
 
-            st.session_state.trained_models = trained_models
-            st.write(f"✅ {len(trained_models)} models trained")
+    for i, (name, r) in enumerate(results.items()):
+        prob      = r["pipe"].predict_proba(last_row)[0, 1]
+        confident = prob >= conf_threshold or prob <= (1 - conf_threshold)
+        direction = "UP ▲" if prob >= 0.5 else "DOWN ▼"
+        css_cls   = "pred-up" if prob >= 0.5 else "pred-down"
+        conf_pct  = max(prob, 1 - prob)
 
-            # Step 5 — Evaluate
-            st.write("📊 Evaluating on test set...")
-            eval_results = evaluate_all(trained_models, X_test, y_test)
-            st.session_state.eval_results  = eval_results
-            st.session_state.pipeline_done = True
-            st.session_state.last_run      = datetime.now().strftime("%Y-%m-%d %H:%M")
-            status.update(label="✅ Pipeline complete", state="complete")
-
-    except Exception as e:
-        st.error(f"Pipeline crashed: {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        pass
-
-# ── Tab: Data ─────────────────────────────────────────────────────────────────
-with tab_data:
-    if st.session_state.df is not None:
-        df = st.session_state.df
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Rows",  f"{df.shape[0]:,}")
-        c2.metric("Date From",   str(df.index.min().date()))
-        c3.metric("Date To",     str(df.index.max().date()))
-        c4.metric("Years",       f"{(df.index.max() - df.index.min()).days / 365:.1f}")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_l, col_r = st.columns([3, 1])
-        with col_l:
-            st.markdown("**Close Price History**")
-            st.line_chart(df["close"], color="#4C72B0", height=280)
-        with col_r:
-            st.markdown("**Volume**")
-            st.bar_chart(df["volume"], color="#2a3a5a", height=280)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Recent Data (last 50 rows)**")
-        st.dataframe(df.tail(50).style.format(precision=2), use_container_width=True, height=280)
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("Run the pipeline from the sidebar to load data.")
-
-# ── Tab: Validation ───────────────────────────────────────────────────────────
-with tab_val:
-    if st.session_state.validation_results is not None:
-        r = st.session_state.validation_results
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Rows",    f"{r['row_count']:,}")
-        c2.metric("Null Columns",  len(r["missing_values"]) if r["has_nulls"] else 0)
-        c3.metric("Duplicate Dates", r["duplicate_dates"])
-        c4.metric("Price Jumps",   r["suspicious_price_jumps"])
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Checks**")
-        checks = [
-            ("OHLC Logic",     r["ohlc_clean"],               "High ≥ Low, Open & Close within range"),
-            ("No Null Values", not r["has_nulls"],             f"{r['missing_values'] or 'None'}"),
-            ("No Duplicates",  r["duplicate_dates"] == 0,      f"{r['duplicate_dates']} duplicate dates"),
-            ("No Neg Volume",  r["negative_volume"] == 0,      f"{r['negative_volume']} rows"),
-        ]
-        for label, passed, detail in checks:
-            cls  = "check-pass" if passed else "check-fail"
-            icon = "✓" if passed else "✗"
+        with pred_cols[i]:
             st.markdown(f"""
-            <div class='check-row {cls}'>
-                <span style='font-size:16px'>{icon}</span>
-                <span style='flex:1'>{label}</span>
-                <span style='opacity:0.6; font-size:11px'>{detail}</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        if r["suspicious_price_jumps"] > 0:
-            st.markdown(f"""
-            <div class='check-row check-warn' style='margin-top:8px'>
-                ⚠ {r['suspicious_price_jumps']} suspicious price jumps &nbsp;·&nbsp;
-                <span style='font-size:11px'>{r.get('suspicious_dates', [])}</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(f"**Date range:** `{r['date_from']}` → `{r['date_to']}`")
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("Run the pipeline to see validation results.")
-
-# ── Tab: Features ─────────────────────────────────────────────────────────────
-with tab_feat:
-    if st.session_state.X_train is not None:
-        X_train = st.session_state.X_train
-        X_test  = st.session_state.X_test
-        y_train = st.session_state.y_train
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Features",        X_train.shape[1])
-        c2.metric("Train Rows",      f"{len(X_train):,}")
-        c3.metric("Test Rows",       f"{len(X_test):,}")
-        c4.metric("Up Days (train)", f"{y_train.mean() * 100:.1f}%")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_l, col_r = st.columns([1, 2])
-        with col_l:
-            st.markdown("**Target Distribution**")
-            dist = y_train.value_counts().rename({0: "⬇ Down", 1: "⬆ Up"})
-            st.bar_chart(dist, color="#4C72B0", height=240)
-        with col_r:
-            st.markdown("**Feature Statistics**")
-            st.dataframe(X_train.describe().T.style.format(precision=4), use_container_width=True, height=280)
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("Run the pipeline to see feature data.")
-
-# ── Chart helpers ─────────────────────────────────────────────────────────────
-def make_cm_fig(cm):
-    fig, ax = plt.subplots(figsize=(3.5, 3))
-    fig.patch.set_facecolor("#0a0a12")
-    ax.set_facecolor("#0a0a12")
-    ax.imshow(cm, cmap="Blues")
-    ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
-    ax.set_xticklabels(["Down", "Up"], color="#aaa")
-    ax.set_yticklabels(["Down", "Up"], color="#aaa")
-    ax.set_xlabel("Predicted", color="#666"); ax.set_ylabel("Actual", color="#666")
-    ax.tick_params(colors="#666")
-    for spine in ax.spines.values(): spine.set_edgecolor("#1e1e30")
-    for r in range(2):
-        for c in range(2):
-            ax.text(c, r, cm[r, c], ha="center", va="center",
-                    color="white" if cm[r, c] > cm.max() / 2 else "#aaa",
-                    fontsize=15, fontweight="bold")
-    plt.tight_layout(pad=0.5)
-    return fig
-
-def make_prob_fig(proba_pos):
-    fig, ax = plt.subplots(figsize=(3.5, 3))
-    fig.patch.set_facecolor("#0a0a12")
-    ax.set_facecolor("#0a0a12")
-    ax.hist(proba_pos, bins=30, color="#4C72B0", edgecolor="#0a0a12", alpha=0.85)
-    ax.axvline(0.5, color="#C44E52", linestyle="--", linewidth=1.5, label="0.5 threshold")
-    ax.set_xlabel("P(Up)", color="#666"); ax.set_ylabel("Count", color="#666")
-    ax.tick_params(colors="#555")
-    ax.legend(fontsize=9, labelcolor="#aaa", facecolor="#111")
-    for spine in ax.spines.values(): spine.set_edgecolor("#1e1e30")
-    plt.tight_layout(pad=0.5)
-    return fig
-
-def make_imp_fig(model, name):
-    fig, ax = plt.subplots(figsize=(3.5, 3))
-    fig.patch.set_facecolor("#0a0a12")
-    ax.set_facecolor("#0a0a12")
-    clf  = model.named_steps["clf"]
-    imps = clf.feature_importances_
-    n    = min(15, len(FEATURE_COLS))
-    idx  = np.argsort(imps)[-n:]
-    ax.barh(np.array(FEATURE_COLS)[idx], imps[idx], color="#55A868", alpha=0.85)
-    ax.set_xlabel("Importance", color="#666")
-    ax.tick_params(colors="#555", labelsize=7)
-    for spine in ax.spines.values(): spine.set_edgecolor("#1e1e30")
-    plt.tight_layout(pad=0.5)
-    return fig
-
-# ── Tab: Models ───────────────────────────────────────────────────────────────
-with tab_models:
-    if st.session_state.eval_results is not None:
-        eval_results   = st.session_state.eval_results
-        trained_models = st.session_state.trained_models
-        y_test         = st.session_state.y_test
-        baseline_acc   = st.session_state.baseline_acc
-
-        # Show baseline for reference
-        st.markdown(f"**Baseline (always predict UP):** `{baseline_acc:.4f}` — your models must beat this to add value.")
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        for name, (preds, proba, cm) in eval_results.items():
-            acc = accuracy_score(y_test, preds)
-            auc = roc_auc_score(y_test, proba[:, 1])
-
-            # Beat baseline indicator
-            beat = "✅ beats baseline" if acc > baseline_acc else "⚠️ below baseline"
-            st.markdown(f"#### {name} — {beat}")
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Accuracy",  f"{acc:.4f}", delta=f"{acc - baseline_acc:+.4f} vs baseline")
-            c2.metric("ROC-AUC",   f"{auc:.4f}")
-            c3.metric("Test Rows", f"{len(preds):,}")
-            c4.metric("Baseline",  f"{baseline_acc:.4f}")
-
-            col_cm, col_prob, col_imp = st.columns(3)
-
-            with col_cm:
-                st.markdown("<div style='font-size:12px;color:#555577;font-family:Space Mono,monospace'>CONFUSION MATRIX</div>", unsafe_allow_html=True)
-                fig = make_cm_fig(cm)
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)   # FIX: was plt.close() — close the specific figure
-
-            with col_prob:
-                st.markdown("<div style='font-size:12px;color:#555577;font-family:Space Mono,monospace'>PROB DISTRIBUTION</div>", unsafe_allow_html=True)
-                fig = make_prob_fig(proba[:, 1])
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
-            with col_imp:
-                st.markdown("<div style='font-size:12px;color:#555577;font-family:Space Mono,monospace'>FEATURE IMPORTANCE</div>", unsafe_allow_html=True)
-                fig = make_imp_fig(trained_models[name], name)
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
-            st.divider()
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("Run the pipeline to see model results.")
-
-# ── Tab: Prediction ───────────────────────────────────────────────────────────
-with tab_pred:
-    if st.session_state.trained_models is not None:
-        df_feat        = st.session_state.df_feat
-        trained_models = st.session_state.trained_models
-        latest         = df_feat[FEATURE_COLS].dropna().iloc[[-1]]
-        as_of_date     = df_feat.index[-1].date()
-
-        st.markdown(f"""
-        <div style='margin-bottom: 24px'>
-            <div class='pipeline-header'>Tomorrow's forecast</div>
-            <div style='font-size: 13px; color: #555577; margin-top: 4px; font-family: Space Mono, monospace;'>
-                Based on data as of {as_of_date}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # FIX: compute probabilities ONCE per model, store in dict — original called predict_proba
-        # twice per model (once for cards, once for vote counting), doubling inference cost
-        model_probs = {name: model.predict_proba(latest)[0, 1] for name, model in trained_models.items()}
-
-        cols = st.columns(len(trained_models))
-        for col, (name, prob) in zip(cols, model_probs.items()):
-            is_up     = prob >= 0.5
-            direction = "⬆ UP" if is_up else "⬇ DOWN"
-            cls       = "pred-up" if is_up else "pred-down"
-            with col:
-                st.markdown(f"""
-                <div class='pred-card {cls}'>
-                    <div class='pred-name'>{name}</div>
-                    <div class='pred-direction'>{direction}</div>
-                    <div class='pred-conf'>confidence {prob:.1%}</div>
+            <div class="pred-card">
+                <div class="pred-label">{name}</div>
+                <div class="{css_cls}">{direction}</div>
+                <div class="pred-conf">confidence: {conf_pct:.1%}</div>
+                <div class="pred-label" style="margin-top:0.5rem;">
+                    {'✓ above threshold' if confident else '⚠ below threshold — skip trade'}
                 </div>
-                """, unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Model Agreement**")
-        votes_up   = sum(1 for p in model_probs.values() if p >= 0.5)
-        votes_down = len(model_probs) - votes_up
-        consensus  = "⬆ UP" if votes_up > votes_down else ("⬇ DOWN" if votes_down > votes_up else "— SPLIT")
+    st.caption(f"Based on data through {last_date} · Threshold: {conf_threshold:.0%} · Not financial advice.")
+    st.divider()
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Votes UP",   votes_up)
-        c2.metric("Votes DOWN", votes_down)
-        c3.metric("Consensus",  consensus)
-    else:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("Run the pipeline to see tomorrow's prediction.")
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_metrics, tab_roc, tab_cm, tab_dist, tab_fi, tab_price, tab_data = st.tabs([
+        "📊 Metrics",
+        "📉 ROC Curve",
+        "🔢 Confusion Matrix",
+        "📦 Probability Distribution",
+        "🌲 Feature Importance",
+        "🕯 Price History",
+        "🔍 Recent Indicators",
+    ])
+
+    # ── Tab 1: Metrics ─────────────────────────────────────────────────────────
+    with tab_metrics:
+        st.subheader("Model performance")
+
+        m_cols = st.columns(len(models))
+        for i, (name, r) in enumerate(m_cols):
+            pass  # avoid overwriting
+
+        for i, (name, r) in enumerate(results.items()):
+            with m_cols[i]:
+                st.markdown(f"**{name}**")
+                c1, c2 = st.columns(2)
+                c1.metric("Accuracy", f"{r['acc']:.4f}")
+                c2.metric("ROC-AUC", f"{r['auc']:.4f}")
+                rep = classification_report(
+                    y_test, r["preds"],
+                    target_names=["Down", "Up"],
+                    output_dict=True
+                )
+                rep_df = pd.DataFrame(rep).T.round(3)
+                st.dataframe(rep_df, use_container_width=True)
+
+        st.divider()
+        st.subheader("Accuracy vs ROC-AUC")
+        names = list(results.keys())
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            name="Accuracy", x=names,
+            y=[results[n]["acc"] for n in names],
+            marker_color="#388bfd"
+        ))
+        fig_bar.add_trace(go.Bar(
+            name="ROC-AUC", x=names,
+            y=[results[n]["auc"] for n in names],
+            marker_color="#3fb950"
+        ))
+        fig_bar.add_hline(y=0.5, line_dash="dot", line_color="red",
+                          annotation_text="random baseline")
+        fig_bar.update_layout(
+            barmode="group", yaxis_range=[0, 1],
+            height=320, margin=dict(t=20, b=20),
+            legend=dict(orientation="h", y=1.08),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # Confidence-threshold analysis
+        st.subheader("Accuracy at different confidence thresholds")
+        thresh_rows = []
+        for name, r in results.items():
+            for t in np.arange(0.45, 0.76, 0.05):
+                mask = (r["proba"] >= t) | (r["proba"] <= 1 - t)
+                if mask.sum() == 0:
+                    continue
+                acc_t   = accuracy_score(y_test[mask], r["preds"][mask])
+                covered = mask.mean()
+                thresh_rows.append({"Model": name, "Threshold": round(t, 2), "Accuracy": acc_t, "Coverage": covered})
+
+        thresh_df = pd.DataFrame(thresh_rows)
+        fig_thresh = px.line(
+            thresh_df, x="Threshold", y="Accuracy",
+            color="Model", markers=True,
+            labels={"Accuracy": "Accuracy on confident predictions"},
+            color_discrete_map={"Random Forest": "#388bfd", "XGBoost": "#3fb950"}
+        )
+        fig_thresh.add_hline(y=0.5, line_dash="dot", line_color="red",
+                             annotation_text="random baseline")
+        fig_thresh.update_layout(
+            height=320, margin=dict(t=20, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_thresh, use_container_width=True)
+        st.caption("Higher threshold = fewer trades but higher accuracy on those taken.")
+
+    # ── Tab 2: ROC Curve ───────────────────────────────────────────────────────
+    with tab_roc:
+        st.subheader("ROC curve (test set)")
+        fig_roc = go.Figure()
+        fig_roc.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode="lines", line=dict(dash="dot", color="gray"),
+            name="Random baseline"
+        ))
+        colors = {"Random Forest": "#388bfd", "XGBoost": "#3fb950"}
+        for name, r in results.items():
+            fpr, tpr, _ = roc_curve(y_test, r["proba"])
+            fig_roc.add_trace(go.Scatter(
+                x=fpr, y=tpr,
+                mode="lines",
+                name=f"{name} (AUC={r['auc']:.3f})",
+                line=dict(color=colors[name], width=2)
+            ))
+        fig_roc.update_layout(
+            xaxis_title="False positive rate",
+            yaxis_title="True positive rate",
+            height=420, margin=dict(t=20, b=20),
+            legend=dict(orientation="h", y=-0.2),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_roc, use_container_width=True)
+
+    # ── Tab 3: Confusion Matrix ────────────────────────────────────────────────
+    with tab_cm:
+        st.subheader("Confusion matrix")
+        cm_cols = st.columns(len(results))
+        for i, (name, r) in enumerate(results.items()):
+            with cm_cols[i]:
+                cm = r["cm"]
+                fig_cm = px.imshow(
+                    cm,
+                    labels=dict(x="Predicted", y="Actual", color="Count"),
+                    x=["Down", "Up"], y=["Down", "Up"],
+                    text_auto=True,
+                    color_continuous_scale="Blues",
+                    title=name,
+                )
+                fig_cm.update_layout(height=340, margin=dict(t=50, b=20),
+                                     paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig_cm, use_container_width=True)
+
+                tn, fp, fn, tp = cm.ravel()
+                a, b = st.columns(2)
+                a.metric("True UP (TP)", int(tp))
+                b.metric("True DOWN (TN)", int(tn))
+                a.metric("False UP (FP)", int(fp))
+                b.metric("False DOWN (FN)", int(fn))
+                precision_up = tp / (tp + fp + 1e-9)
+                recall_up    = tp / (tp + fn + 1e-9)
+                st.caption(f"UP precision: {precision_up:.1%} · UP recall: {recall_up:.1%}")
+
+    # ── Tab 4: Probability Distribution ───────────────────────────────────────
+    with tab_dist:
+        st.subheader("Predicted probability distribution")
+        dist_cols = st.columns(len(results))
+        for i, (name, r) in enumerate(results.items()):
+            with dist_cols[i]:
+                fig_h = go.Figure()
+                fig_h.add_trace(go.Histogram(
+                    x=r["proba"], nbinsx=30,
+                    marker_color="#388bfd", opacity=0.8,
+                    name="Predicted P(Up)"
+                ))
+                fig_h.add_vline(x=0.5, line_dash="dash", line_color="gray",
+                                annotation_text="0.5")
+                fig_h.add_vline(x=conf_threshold, line_dash="dot", line_color="#d2a679",
+                                annotation_text=f"threshold {conf_threshold:.2f}")
+                fig_h.add_vline(x=1 - conf_threshold, line_dash="dot", line_color="#d2a679")
+                fig_h.update_layout(
+                    title=name,
+                    xaxis_title="P(next day UP)",
+                    yaxis_title="Count",
+                    height=340, margin=dict(t=50, b=20),
+                    showlegend=False,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_h, use_container_width=True)
+
+                # Calibration summary
+                buckets = pd.cut(r["proba"], bins=[0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0])
+                cal = (
+                    pd.DataFrame({"prob": r["proba"], "actual": y_test.values, "bucket": buckets})
+                    .groupby("bucket", observed=True)["actual"]
+                    .agg(["mean", "count"])
+                    .rename(columns={"mean": "Actual UP rate", "count": "N"})
+                )
+                cal.index = cal.index.astype(str)
+                st.dataframe(cal.round(3), use_container_width=True)
+
+    # ── Tab 5: Feature Importance ──────────────────────────────────────────────
+    with tab_fi:
+        st.subheader("Top 15 feature importances")
+        fi_cols = st.columns(len(results))
+        for i, (name, r) in enumerate(results.items()):
+            with fi_cols[i]:
+                clf   = r["pipe"].named_steps["clf"]
+                imps  = clf.feature_importances_
+                fi_df = (
+                    pd.DataFrame({"feature": feat_cols, "importance": imps})
+                    .sort_values("importance", ascending=False)
+                    .head(15)
+                )
+                fig_fi = px.bar(
+                    fi_df.sort_values("importance"),
+                    x="importance", y="feature",
+                    orientation="h",
+                    title=name,
+                    color="importance",
+                    color_continuous_scale="Teal",
+                )
+                fig_fi.update_layout(
+                    height=460, margin=dict(t=50, b=20),
+                    showlegend=False,
+                    coloraxis_showscale=False,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_fi, use_container_width=True)
+
+    # ── Tab 6: Price History ───────────────────────────────────────────────────
+    with tab_price:
+        st.subheader(f"{ticker} price history with train/test split")
+        split_idx = int(len(clean_df) * (1 - test_size))
+        train_price = clean_df["Close"].iloc[:split_idx]
+        test_price  = clean_df["Close"].iloc[split_idx:]
+
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Scatter(
+            x=train_price.index, y=train_price,
+            name="Train", line=dict(color="#388bfd", width=1.5)
+        ))
+        fig_p.add_trace(go.Scatter(
+            x=test_price.index, y=test_price,
+            name="Test", line=dict(color="#f0883e", width=1.5)
+        ))
+        fig_p.update_layout(
+            height=380, margin=dict(t=20, b=20),
+            xaxis_title="Date", yaxis_title="Close price (USD)",
+            legend=dict(orientation="h", y=1.1),
+            hovermode="x unified",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_p, use_container_width=True)
+
+        # Candlestick — last 90 days
+        st.subheader("Last 90 trading days (candlestick)")
+        recent = raw.iloc[-90:]
+        fig_candle = go.Figure(go.Candlestick(
+            x=recent.index,
+            open=recent["Open"], high=recent["High"],
+            low=recent["Low"],  close=recent["Close"],
+            increasing_line_color="#3fb950",
+            decreasing_line_color="#f85149",
+        ))
+        fig_candle.update_layout(
+            xaxis_rangeslider_visible=False,
+            height=380, margin=dict(t=20, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_candle, use_container_width=True)
+
+    # ── Tab 7: Recent indicator values ────────────────────────────────────────
+    with tab_data:
+        st.subheader("Latest 30 rows — engineered features")
+        display_cols = [
+            "rsi14", "macd", "macd_signal", "bb_width", "bb_pct",
+            "atr_ratio", "vol_spike", "sma_5_ratio", "sma_20_ratio",
+            "ret_1d", "ret_5d", "body", "upper_shadow", "lower_shadow"
+        ]
+        latest_df = feat_df[display_cols].tail(30).round(4)
+        st.dataframe(latest_df[::-1], use_container_width=True, height=460)
+
+        st.divider()
+        st.subheader("Signal summary (last row)")
+        last = latest_df.iloc[-1]
+        s1, s2, s3 = st.columns(3)
+        s1.metric("RSI-14",       f"{last['rsi14']:.1f}",
+                  delta="overbought" if last['rsi14'] > 70 else ("oversold" if last['rsi14'] < 30 else "neutral"))
+        s2.metric("MACD hist",    f"{last['macd_hist']:.4f}",
+                  delta="bullish" if last['macd_hist'] > 0 else "bearish")
+        s3.metric("BB %B",        f"{last['bb_pct']:.2f}",
+                  delta="near upper band" if last['bb_pct'] > 0.8 else (
+                      "near lower band" if last['bb_pct'] < 0.2 else "mid-band"))
+
+else:
+    # ── Landing state ──────────────────────────────────────────────────────────
+    st.info("Configure settings in the sidebar, then click **🚀 Run Pipeline**.", icon="👈")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("### 📡 Live data")
+        st.markdown("Fetches AAPL history from Yahoo Finance — no MySQL required in this demo.")
+    with col2:
+        st.markdown("### ⚙️ 20+ features")
+        st.markdown("RSI, MACD, Bollinger Bands, ATR, SMA ratios, volume spikes, candle structure.")
+    with col3:
+        st.markdown("### 🤖 Two models")
+        st.markdown("Random Forest + XGBoost trained with chronological train/test split.")
+    with col4:
+        st.markdown("### 🎯 Thresholded pred")
+        st.markdown("Only predict when model confidence clears your chosen threshold.")
+
+    st.divider()
+    st.markdown("#### Pipeline flow")
+    st.code("""
+Yahoo Finance → feature engineering (20+ indicators)
+    → chronological train/test split
+    → Random Forest + XGBoost training
+    → Accuracy · ROC-AUC · Confusion matrix · Feature importance
+    → Tomorrow's UP/DOWN prediction with confidence score
+    """, language="text")

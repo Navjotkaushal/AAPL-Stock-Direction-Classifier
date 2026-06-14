@@ -5,6 +5,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import joblib
 import pandas as pd
@@ -12,17 +13,20 @@ import numpy as np
 from sklearn.metrics import (
     accuracy_score, roc_auc_score, confusion_matrix, classification_report
 )
-import threading
 import time
 import os
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="AAPL Direction Classifier API")
 
+# NOTE: Change this to your actual deployed frontend URL before going live.
+# Using "*" is fine for local dev but exposes the API to any origin in production.
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -35,8 +39,6 @@ pipeline_state = {
     "trained_at": None,
 }
 
-# Use /tmp on Render (ephemeral but writable); falls back to local models/ dir
-import tempfile
 _TMP = "/tmp"
 MODEL_PATH       = f"{_TMP}/trained_models.pkl"
 FEATURE_COL_PATH = f"{_TMP}/feature_columns.pkl"
@@ -91,8 +93,6 @@ def run_pipeline_task(test_size: float):
                 target_names=["Down", "Up"],
                 output_dict=True
             )
-
-            # Feature importance
             clf = model.named_steps["clf"]
             feat_imp = sorted(
                 zip(list(X.columns), clf.feature_importances_.tolist()),
@@ -100,12 +100,12 @@ def run_pipeline_task(test_size: float):
             )[:15]
 
             metrics[name] = {
-                "accuracy":        round(accuracy_score(y_test, preds), 4),
-                "roc_auc":         round(roc_auc_score(y_test, proba), 4),
-                "confusion_matrix": cm,
-                "report":          report,
+                "accuracy":           round(accuracy_score(y_test, preds), 4),
+                "roc_auc":            round(roc_auc_score(y_test, proba), 4),
+                "confusion_matrix":   cm,
+                "report":             report,
                 "feature_importance": feat_imp,
-                "proba_hist":      proba.tolist(),
+                "proba_hist":         proba.tolist(),
             }
 
         pipeline_state["steps_done"].append({"label": "Evaluation complete"})
@@ -113,10 +113,10 @@ def run_pipeline_task(test_size: float):
         # Step 5 – save
         pipeline_state["step"] = "Saving models to disk…"
         os.makedirs("models", exist_ok=True)
-        joblib.dump(models,           MODEL_PATH)
-        joblib.dump(list(X.columns),  FEATURE_COL_PATH)
-        joblib.dump(df_feat,          FEAT_DF_PATH)
-        joblib.dump(metrics,          METRICS_PATH)
+        joblib.dump(models,          MODEL_PATH)
+        joblib.dump(list(X.columns), FEATURE_COL_PATH)
+        joblib.dump(df_feat,         FEAT_DF_PATH)
+        joblib.dump(metrics,         METRICS_PATH)
 
         split_idx = int(len(df_feat) * (1 - test_size))
         joblib.dump({
@@ -150,7 +150,6 @@ class PipelineRequest(BaseModel):
 def run_pipeline(req: PipelineRequest, background_tasks: BackgroundTasks):
     if pipeline_state["status"] == "running":
         raise HTTPException(status_code=409, detail="Pipeline already running")
-    # Reset
     pipeline_state.update({"status": "idle", "steps_done": [], "error": None})
     background_tasks.add_task(run_pipeline_task, req.test_size)
     return {"message": "Pipeline started"}
@@ -168,11 +167,11 @@ def predict():
                 detail="No trained model found. Run the pipeline first."
             )
 
-    models      = joblib.load(MODEL_PATH)
-    feat_cols   = joblib.load(FEATURE_COL_PATH)
-    df_feat     = joblib.load(FEAT_DF_PATH)
-    metrics     = joblib.load(METRICS_PATH)
-    split_data  = joblib.load(SPLIT_PATH) if os.path.exists(SPLIT_PATH) else {}
+    models     = joblib.load(MODEL_PATH)
+    feat_cols  = joblib.load(FEATURE_COL_PATH)
+    df_feat    = joblib.load(FEAT_DF_PATH)
+    metrics    = joblib.load(METRICS_PATH)
+    split_data = joblib.load(SPLIT_PATH) if os.path.exists(SPLIT_PATH) else {}
 
     latest    = df_feat[feat_cols].dropna().iloc[[-1]]
     last_date = str(df_feat.index[-1].date())
@@ -196,15 +195,15 @@ def predict():
         "split_data":  split_data,
     }
 
-@app.get("/")
-def root():
-    return {"service": "AAPL Direction Classifier API", "status": "ok"}
-
 @app.get("/health")
 def health():
-    model_ready = os.path.exists(MODEL_PATH)
     return {
         "status":      "ok",
-        "model_ready": model_ready,
+        "model_ready": os.path.exists(MODEL_PATH),
         "pipeline":    pipeline_state["status"],
     }
+
+# ── Serve frontend ─────────────────────────────────────────────────────────────
+# index.html must be in a folder called "static" next to this file.
+# Access via: http://localhost:8000/
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
