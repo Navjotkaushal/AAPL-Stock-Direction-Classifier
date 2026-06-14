@@ -219,7 +219,7 @@ if run_btn:
             pass
         raise
     finally:
-        conn.close()
+        pass
 
 # ── Tab: Data ─────────────────────────────────────────────────────────────────
 with tab_data:

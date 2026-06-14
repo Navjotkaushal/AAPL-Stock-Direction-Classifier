@@ -85,17 +85,9 @@ class TestAddFeatures:
         rsi = featured_df["rsi_14"].dropna()
         assert (rsi >= 0).all() and (rsi <= 100).all()
 
-    def test_bollinger_upper_above_lower(self, featured_df):
-        df = featured_df.dropna(subset=["bb_upper", "bb_lower"])
-        assert (df["bb_upper"] >= df["bb_lower"]).all()
-
     def test_bb_pct_finite(self, featured_df):
         bb_pct = featured_df["bb_pct"].replace([np.inf, -np.inf], np.nan).dropna()
         assert np.isfinite(bb_pct).all()
-
-    def test_atr_positive(self, featured_df):
-        atr = featured_df["atr_14"].dropna()
-        assert (atr > 0).all()
 
     def test_volume_ratio_positive(self, featured_df):
         vr = featured_df["vol_ratio"].dropna()

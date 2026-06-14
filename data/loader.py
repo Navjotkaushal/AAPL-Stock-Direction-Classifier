@@ -8,14 +8,14 @@ nothing else in the codebase needs to change.
 
 import yfinance as yf
 import pandas as pd
+from datetime import datetime, timedelta
+from pathlib import Path
+
+STORE_DIR  = Path(__file__).resolve().parent.parent / "data/raw_data"
+STORE_PATH = STORE_DIR / "raw_stock_data.parquet"
 
 
-def get_connection():
-    """No-op — kept for API compatibility with the rest of the pipeline."""
-    return None
-
-
-def load_from_db(conn=None, ticker: str = "AAPL", start: str = "2018-01-01") -> pd.DataFrame:
+def load_data(ticker: str = "AAPL", start: str = "2000-01-01") -> pd.DataFrame:
     """
     Download daily OHLCV data for `ticker` from Yahoo Finance.
 
@@ -25,6 +25,7 @@ def load_from_db(conn=None, ticker: str = "AAPL", start: str = "2018-01-01") -> 
     df = yf.download(
         ticker,
         start=start,
+        end = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d"),
         auto_adjust=True,   # adjusts for splits/dividends automatically
         progress=False,
     )
@@ -46,3 +47,25 @@ def load_from_db(conn=None, ticker: str = "AAPL", start: str = "2018-01-01") -> 
     df = df[[c for c in expected if c in df.columns]]
 
     return df
+
+
+def store_data():
+    
+    df = load_data()
+    
+    if df.empty:
+        raise ValueError("No data. Run ingest.py before running the pipeline.")
+    
+    if not STORE_PATH.exists():
+        raise FileNotFoundError(
+            f"Feature store not found t {STORE_PATH}."
+            "Run the pipeline first to generate features."
+        )
+    df.to_parquet(STORE_PATH, index="date")
+    df.index.name = "date"
+    print(f"Data succesfully stored , Loaded {len(df)} rows ← {STORE_PATH}")
+    
+store_data()
+    
+    
+

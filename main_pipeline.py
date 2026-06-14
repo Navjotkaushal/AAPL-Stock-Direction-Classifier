@@ -1,7 +1,9 @@
+import pandas as pd 
 import warnings
 warnings.filterwarnings(action="ignore")
 
-from data.loader import load_from_db, get_connection
+
+from data.loader import load_data, store_data
 from data.validator import data_validation, print_validation_report
 from features.engineer import add_features, prepare_Xy, time_split, FEATURE_COLS
 from features.pipeline import FeaturePipeline
@@ -12,14 +14,14 @@ from config import TEST_SIZE, RANDOM_STATE
 
 
 def run_pipeline(tune: bool = False, walk_forward: bool = False):
-    conn = get_connection()
     try:
         # ── Step 1: Load ──────────────────────────────────────────────────────
         print("========== Layer 1: Loading Data ==========")
-        df = load_from_db(conn)
+        store_data()
+        df = pd.read_parquet("data/raw_data/raw_stock_data.parquet")
         df = df.copy()
         if df.empty:
-            raise ValueError("No data in DB. Run ingest.py before running the pipeline.")
+            raise ValueError("No data. Run ingest.py before running the pipeline.")
         print(f"Loaded {df.shape[0]} rows, {df.shape[1]} cols\n")
 
         # ── Step 2: Validate ──────────────────────────────────────────────────
@@ -48,10 +50,10 @@ def run_pipeline(tune: bool = False, walk_forward: bool = False):
         obj = FeaturePipeline()
         X_train, X_test, y_train, y_test, df_feat = obj.full_run(df)
 
-        print(f"\nTrain: {X_train.index[0].date()} to {X_train.index[-1].date()}, rows: {len(X_train)}")
-        print(f"Test:  {X_test.index[0].date()}  to {X_test.index[-1].date()},  rows: {len(X_test)}")
-        print(f"Target mean — Train: {y_train.mean():.3f} | Test: {y_test.mean():.3f}")
-        print(f"TEST_SIZE = {TEST_SIZE}\n")
+        # print(f"\nTrain: {X_train.index[0].date()} to {X_train.index[-1].date()}, rows: {len(X_train)}")
+        # print(f"Test:  {X_test.index[0].date()}  to {X_test.index[-1].date()},  rows: {len(X_test)}")
+        # print(f"Target mean — Train: {y_train.mean():.3f} | Test: {y_test.mean():.3f}")
+        # print(f"TEST_SIZE = {TEST_SIZE}\n")
 
         # ── Baseline: always-UP accuracy ──────────────────────────────────────
         baseline_acc = float(y_test.mean())
@@ -63,7 +65,6 @@ def run_pipeline(tune: bool = False, walk_forward: bool = False):
         # Use --walk-forward flag to enable (slow — fits models 5x).
         if walk_forward:
             print("========== Layer 4a: Walk-Forward Validation ==========")
-            import pandas as pd
             X_full = pd.concat([X_train, X_test])
             y_full = pd.concat([y_train, y_test])
 
@@ -119,8 +120,7 @@ def run_pipeline(tune: bool = False, walk_forward: bool = False):
         raise
 
     finally:
-        conn.close()
-        print("Connection closed.")
+        pass
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-from data.loader import load_from_db
 import pandas as pd 
 
 
@@ -77,7 +76,7 @@ def print_validation_report(results: dict):
 
 
 if __name__ == "__main__":
-    df = get_data()
+    df = pd.read_csv("data/raw_data/raw_stock_data.csv")
     results = data_validation(df)
     print_validation_report(results)
 

@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import pandas as pd 
 
 # Store features next to the data folder, not inside the package
-STORE_DIR  = Path(__file__).resolve().parent.parent / "data"
+STORE_DIR  = Path(__file__).resolve().parent.parent / "features/feature_store"
 STORE_PATH = STORE_DIR / "feature_store.csv"
 
 
